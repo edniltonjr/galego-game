@@ -2,7 +2,12 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- "Adicionar à Tela de Início" no iPhone abre em tela cheia, sem as barras do Safari -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Galego">
   <title>A Fuga do Galego</title>
   <style>
     html, body {
@@ -17,7 +22,7 @@
     }
     /* O jogo tem 960x540 "de desenho"; o CSS só ajusta à janela (veja ajustarTela) */
     #palco {
-      position: absolute;
+      position: fixed;
       left: 50%;
       top: 50%;
       width: 960px;
@@ -39,13 +44,27 @@
 // Alta definição: o canvas tem os pixels reais da tela (janela grande, celular "retina"),
 // em vez de desenhar em 960x540 e esticar, o que deixava tudo serrilhado.
 const CANVAS = document.getElementById("jogo");
-const escalaDaJanela = () => Math.min(window.innerWidth / 960, window.innerHeight / 540);
-const NITIDEZ = Math.min(3, Math.max(1, (window.devicePixelRatio || 1) * escalaDaJanela()));
+// Celular em pé: o jogo é girado 90° e ocupa a tela deitada (o iPhone não deixa
+// travar a orientação pelo site). Como todo toque vale como "pular"/"jogar",
+// girar não atrapalha os controles.
+const emPe = () => window.innerHeight > window.innerWidth;
+const escalaPara = (largura, altura) => Math.min(largura / 960, altura / 540);
+const escalaDaJanela = () => emPe()
+  ? escalaPara(window.innerHeight, window.innerWidth)
+  : escalaPara(window.innerWidth, window.innerHeight);
+// a nitidez é fixada ao abrir: usa a maior escala entre as duas orientações,
+// para continuar nítido quando o celular for virado
+const NITIDEZ = Math.min(3, Math.max(1, (window.devicePixelRatio || 1) * Math.max(
+  escalaPara(window.innerWidth, window.innerHeight),
+  escalaPara(window.innerHeight, window.innerWidth))));
 function ajustarTela() {
-  document.getElementById("palco").style.transform = `translate(-50%, -50%) scale(${escalaDaJanela()})`;
+  const girar = emPe() ? " rotate(90deg)" : "";
+  document.getElementById("palco").style.transform =
+    `translate(-50%, -50%)${girar} scale(${escalaDaJanela()})`;
 }
 ajustarTela();
 window.addEventListener("resize", ajustarTela);
+window.addEventListener("orientationchange", () => setTimeout(ajustarTela, 300));
 
 kaboom({
   canvas: CANVAS,
