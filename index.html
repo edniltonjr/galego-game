@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>A Fuga do Galego</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #2a1f4a;
+      overflow: hidden;
+      touch-action: none;       /* evita zoom/scroll no celular ao tocar */
+      user-select: none;
+    }
+    /* O jogo tem 960x540 "de desenho"; o CSS só ajusta à janela (veja ajustarTela) */
+    #palco {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 960px;
+      height: 540px;
+      transform-origin: center;
+    }
+    #jogo { display: block; }
+  </style>
+</head>
+<body>
+<div id="palco"><canvas id="jogo"></canvas></div>
+<!-- Kaboom.js via CDN (versão fixa para não quebrar no futuro) -->
+<script src="https://unpkg.com/kaboom@3000.1.17/dist/kaboom.js"></script>
+<script>
+// =====================================================================
+//  A FUGA DO GALEGO  —  Endless Runner 2D em Kaboom.js (visual cartoon)
+// =====================================================================
+
+// Alta definição: o canvas tem os pixels reais da tela (janela grande, celular "retina"),
+// em vez de desenhar em 960x540 e esticar, o que deixava tudo serrilhado.
+const CANVAS = document.getElementById("jogo");
+const escalaDaJanela = () => Math.min(window.innerWidth / 960, window.innerHeight / 540);
+const NITIDEZ = Math.min(3, Math.max(1, (window.devicePixelRatio || 1) * escalaDaJanela()));
+function ajustarTela() {
+  document.getElementById("palco").style.transform = `translate(-50%, -50%) scale(${escalaDaJanela()})`;
+}
+ajustarTela();
+window.addEventListener("resize", ajustarTela);
+
+kaboom({
+  canvas: CANVAS,
+  width: 960,
+  height: 540,
+  pixelDensity: NITIDEZ,
+  crisp: false,
+  background: [42, 31, 74],
+});
+
+// ---------------------------------------------------------------------
+//  ESTILO CARTOON: contorno escuro grosso, cores fortes, fonte gordinha
+// ---------------------------------------------------------------------
+const TINTA = rgb(40, 25, 60);   // cor de todos os contornos
+const COR = {
+  ceuTopo: rgb(70, 170, 255), ceuBase: rgb(190, 235, 255),
+  morroLonge: rgb(140, 215, 110), morroPerto: rgb(85, 185, 75),
+  asfalto: rgb(75, 72, 95), creme: rgb(255, 248, 225),
+  verde: rgb(70, 190, 80), vermelho: rgb(235, 60, 60), azul: rgb(60, 120, 230),
+  laranja: rgb(255, 150, 30), amarelo: rgb(255, 210, 40),
+};
+// Fonte local (pasta fonts/). "contorno" já vem com borda escura; "texto" é lisa.
+// Fonte gerada grande (160) para continuar nítida na tela cheia; a borda acompanha a proporção.
+loadFont("contorno", "fonts/LilitaOne-Regular.ttf", { outline: { width: 13, color: TINTA }, size: 160 });
+loadFont("texto", "fonts/LilitaOne-Regular.ttf", { size: 160 });
+
+// ---------------------------------------------------------------------
+//  IMAGENS  ➜  É AQUI QUE VOCÊ COLOCA AS FOTOS!
+//  - Deixe url: "" para usar o desenho cartoon do próprio jogo.
+//  - Use PNG com fundo transparente (foto recortada) para ficar bonito.
+//  - Caminho relativo à pasta deste arquivo, ex: "img/galego.png"
+// ---------------------------------------------------------------------
+const IMAGENS = {
+  piloto:    { url: "img/galego-moto.png" }, // o Galego inteiro na moto (caricatura com fundo removido)
+  galego:    { url: "img/galego.png" }, // rosto recortado em oval: aparece tonto no game over
+  moto:      { url: "" /* (OPCIONAL) imagem da moto/kart, ex: "img/moto.png" */ },
+  coca:      { url: "img/coca.png" }, // garrafa de 1 litro (fundo transparente)
+  remedio:   { url: "" /* (OPCIONAL) imagem da caixa de remédio, ex: "img/remedio.png" */ },
+  halter:    { url: "" /* (OPCIONAL) imagem do halter, ex: "img/halter.png" */ },
+  carro_som: { url: "" /* (OPCIONAL) imagem do carro de som, ex: "img/carro_som.png" */ },
+};
+
+// Só carrega o sprite se tiver URL. Sem URL => desenho cartoon.
+// Atenção: aberto com duplo clique (file://) o navegador BLOQUEIA imagens.
+const ABERTO_DO_DISCO = location.protocol === "file:";
+let IMAGEM_BLOQUEADA = false;
+for (const [nome, img] of Object.entries(IMAGENS)) {
+  if (!img.url) continue;
+  if (ABERTO_DO_DISCO && !img.url.startsWith("data:")) {
+    IMAGEM_BLOQUEADA = true;
+    img.url = "";
+    continue;
+  }
+  loadSprite(nome, img.url);
+}
+
+// ---------------------------------------------------------------------
+//  AJUSTES DO JOGO (mexa à vontade)
+// ---------------------------------------------------------------------
+const GRAVIDADE    = 2400;
+const FORCA_PULO   = 820;   // altura do pulo
+const CORTE_PULO   = 0.45;  // soltar o botão cedo = pulo mais baixo
+const VEL_INICIAL  = 360;   // pixels por segundo
+const VEL_MAX      = 900;
+const BOOST_COCA   = 12;    // velocidade extra por Coca
+const CHAO_Y       = 460;   // altura do chão
+const GALEGO_X     = 140;   // posição fixa do Galego na tela
+const P_W = 70, P_H = 95;   // tamanho do Galego + moto
+// Desenho do Galego na moto: 120 x 169, rodas alinhadas ao chão, sobrando para os lados
+const PILOTO = { w: 120, h: 169, x: -25, y: P_H - 169 };
+
+const FRASES_COCA = [
+  "GELAAADA!", "Mais uma!", "Remédio é o caramba!", "Glub glub!",
+  "Isso que é vitamina!", "Só uma... a décima.", "+10",
+];
+const NASCIMENTO = new Date(1959, 6, 28); // 28/07/1959
+
+function idadeDoGalego() {
+  const hoje = new Date();
+  let idade = hoje.getFullYear() - NASCIMENTO.getFullYear();
+  const m = hoje.getMonth() - NASCIMENTO.getMonth();
+  if (m < 0 || (m === 0 && hoje.getDate() < NASCIMENTO.getDate())) idade--;
+  return idade;
+}
+
+function lerRecorde() {
+  try { return Number(localStorage.getItem("galego_recorde")) || 0; } catch (e) { return 0; }
+}
+function salvarRecorde(v) {
+  try { localStorage.setItem("galego_recorde", String(v)); } catch (e) { /* sem storage, tudo bem */ }
+}
+
+// Velocidade usada pelas rodas e pelo cenário da cena atual.
+let VEL_ATUAL = 0;
+
+// ---------------------------------------------------------------------
+//  Peças de desenho
+// ---------------------------------------------------------------------
+function escrever(msg, tamanho, opts = {}) {
+  return text(msg, {
+    size: tamanho,
+    font: opts.liso ? "texto" : "contorno",
+    width: opts.largura,
+    align: opts.alinhar || "center",
+    // a borda da fonte "contorno" alarga cada letra; aproxima de volta
+    letterSpacing: opts.liso ? 0 : -tamanho * 0.33,
+  });
+}
+
+// Bloco arredondado com contorno (painéis, botões, etiquetas)
+function bloco(pai, w, h, x, y, cor, opts = {}) {
+  return (pai ? pai.add.bind(pai) : add)([
+    rect(w, h, { radius: opts.raio ?? Math.min(w, h) / 2 }),
+    pos(x, y),
+    color(cor),
+    outline(opts.borda ?? 4, TINTA),
+    ...(opts.anchor ? [anchor(opts.anchor)] : []),
+    z(opts.z ?? 0),
+  ]);
+}
+
+// Botão "de brinquedo": sombra embaixo + corpo + texto, pulsando
+function botao(rotulo, x, y, w, h, cor) {
+  const b = add([pos(x, y), anchor("center"), scale(1), z(70)]);
+  b.add([rect(w, h, { radius: h / 2 }), anchor("center"), pos(0, 7), color(TINTA)]);
+  b.add([rect(w, h, { radius: h / 2 }), anchor("center"), color(cor), outline(5, TINTA)]);
+  b.add([rect(w - 30, h * 0.28, { radius: h * 0.14 }), anchor("center"), pos(0, -h * 0.22), color(255, 255, 255), opacity(0.35)]);
+  b.add([escrever(rotulo, h * 0.55), anchor("center"), pos(0, 2), color(255, 255, 255)]);
+  b.onUpdate(() => { b.scale = vec2(1 + Math.sin(time() * 5) * 0.04); });
+  return b;
+}
+
+// ---------- Objetos do jogo, desenhados em "w x h" a partir do canto ----------
+function desenharCoca(o, w, h) {
+  o.add([rect(w, h, { radius: 8 }), color(225, 30, 45), outline(3, TINTA)]);
+  o.add([rect(w - 6, 5, { radius: 2 }), pos(3, 3), color(225, 225, 235)]);
+  o.add([rect(w - 6, 5, { radius: 2 }), pos(3, h - 8), color(225, 225, 235)]);
+  o.add([rect(w - 2, 12, { radius: 3 }), pos(1, h * 0.4), color(255, 255, 255)]);
+  o.add([escrever("COCA", 9, { liso: true }), pos(w / 2, h * 0.4 + 7), anchor("center"), color(225, 30, 45)]);
+  o.add([rect(4, h - 20, { radius: 2 }), pos(5, 10), color(255, 255, 255), opacity(0.45)]);
+}
+
+function caixaRemedio(o, w, h, y0) {
+  o.add([rect(w, h, { radius: 6 }), pos(0, y0), color(255, 255, 255), outline(3, TINTA)]);
+  o.add([rect(w - 8, 4, { radius: 2 }), pos(4, y0 + 5), color(210, 215, 230)]);
+  o.add([rect(w - 8, 7, { radius: 3 }), pos(4, y0 + h - 11), color(COR.azul)]);
+  const c = Math.min(w, h) * 0.5;
+  o.add([rect(c * 0.36, c), pos(w / 2, y0 + h / 2 - 2), anchor("center"), color(COR.vermelho)]);
+  o.add([rect(c, c * 0.36), pos(w / 2, y0 + h / 2 - 2), anchor("center"), color(COR.vermelho)]);
+}
+function desenharRemedio(o, w, h) {
+  if (h > 60) { caixaRemedio(o, w, h / 2, 0); caixaRemedio(o, w, h / 2, h / 2); } // empilhado
+  else caixaRemedio(o, w, h, 0);
+}
+
+function desenharHalter(o, w, h) {
+  o.add([rect(w - 16, 9, { radius: 4 }), pos(8, h / 2 - 4.5), color(175, 180, 195), outline(3, TINTA)]);
+  for (const [x, ww, hh] of [[2, 12, h], [w - 14, 12, h], [13, 9, h - 12], [w - 22, 9, h - 12]]) {
+    o.add([rect(ww, hh, { radius: 4 }), pos(x, (h - hh) / 2), color(55, 55, 70), outline(3, TINTA)]);
+    o.add([rect(3, hh - 10, { radius: 2 }), pos(x + 3, (h - hh) / 2 + 5), color(255, 255, 255), opacity(0.25)]);
+  }
+}
+
+function nota(pai, x, y, s) {
+  const n = pai.add([pos(x, y), { baseY: y, fase: rand(0, 6) }]);
+  n.add([circle(5 * s), color(TINTA)]);
+  n.add([rect(3 * s, 16 * s), pos(2 * s, -16 * s), color(TINTA)]);
+  n.add([rect(8 * s, 3 * s), pos(2 * s, -16 * s), color(TINTA)]);
+  n.onUpdate(() => { n.pos.y = n.baseY + Math.sin(time() * 4 + n.fase) * 5; });
+}
+
+function desenharCarro(o, w, h) {
+  const sx = w / 220, sy = h / 90, s = Math.min(sx, sy);
+  const B = (bw, bh, x, y, cor, raio, borda = 4) =>
+    o.add([rect(bw * sx, bh * sy, { radius: raio * s }), pos(x * sx, y * sy), color(cor), outline(borda * s, TINTA)]);
+  B(150, 38, 66, 0, rgb(50, 48, 70), 8);                 // caixas de som (onde se sobe)
+  for (const cx of [100, 142]) {
+    o.add([circle(15 * s), pos(cx * sx, 19 * sy), color(105, 100, 130), outline(3 * s, TINTA)]);
+    const cone = o.add([circle(7 * s), pos(cx * sx, 19 * sy), color(30, 28, 45), scale(1)]);
+    cone.onUpdate(() => { cone.scale = vec2(1 + Math.abs(Math.sin(time() * 9)) * 0.35); });
+  }
+  for (const ty of [11, 27]) o.add([circle(5 * s), pos(186 * sx, ty * sy), color(105, 100, 130), outline(2 * s, TINTA)]);
+  B(160, 34, 60, 38, COR.amarelo, 6);                    // carroceria
+  B(150, 6, 65, 50, COR.vermelho, 3, 0);
+  o.add([escrever("SOM", 20 * s), pos(140 * sx, 62 * sy), anchor("center"), color(255, 255, 255)]);
+  B(64, 60, 0, 22, COR.laranja, 12);                     // cabine (frente para a esquerda)
+  B(36, 24, 8, 30, rgb(170, 230, 255), 6, 3);            // janela
+  o.add([rect(6 * sx, 12 * sy, { radius: 3 * s }), pos(14 * sx, 33 * sy), color(255, 255, 255), opacity(0.6)]);
+  o.add([circle(5 * s), pos(5 * sx, 66 * sy), color(255, 240, 150), outline(2 * s, TINTA)]); // farol
+  for (const rx of [40, 180]) {
+    o.add([circle(16 * s), pos(rx * sx, h), color(35, 32, 45), outline(3 * s, TINTA)]);
+    o.add([circle(7 * s), pos(rx * sx, h), color(200, 200, 215)]);
+  }
+  nota(o, 95 * sx, -18 * sy, s);
+  nota(o, 150 * sx, -30 * sy, s);
+}
+
+// Coca no jogo: garrafa (proporção da imagem 141 x 538) ou a lata desenhada
+const COCA = IMAGENS.coca.url ? { w: 20, h: 76 } : { w: 26, h: 50 };
+function iconeCoca(pai, w, h) {
+  if (IMAGENS.coca.url) pai.add([sprite("coca", { width: w, height: h })]);
+  else desenharCoca(pai, w, h);
+}
+
+const DESENHOS = { coca: desenharCoca, remedio: desenharRemedio, halter: desenharHalter, carro_som: desenharCarro };
+
+// Cria um objeto com SPRITE (se tiver url) ou o desenho cartoon
+function criarObj(chave, w, h, x, y, extras = []) {
+  const obj = add([pos(x, y), ...extras]);
+  if (IMAGENS[chave].url) obj.add([sprite(chave, { width: w, height: h })]);
+  else DESENHOS[chave](obj, w, h);
+  return obj;
+}
+
+// Desenha o Galego (foto ou boneco) + kart dentro de "pai"
+function montarGalego(pai) {
+  const corpo = pai.add([pos(0, 0), rotate(0)]);
+  if (IMAGENS.piloto.url) {
+    corpo.add([sprite("piloto", { width: PILOTO.w, height: PILOTO.h }), pos(PILOTO.x, PILOTO.y)]);
+    return corpo;
+  }
+  const PELE = rgb(240, 190, 150);
+
+  // --- Galego (atrás do volante) ---
+  corpo.add([rect(34, 28, { radius: 10 }), pos(14, 36), color(120, 25, 45), outline(3, TINTA)]); // camisa
+  corpo.add([rect(26, 8, { radius: 4 }), pos(36, 46), color(120, 25, 45), outline(2, TINTA)]);   // braço
+  corpo.add([circle(5), pos(P_W - 12, 50), color(PELE), outline(2, TINTA)]);                     // mão
+  if (IMAGENS.galego.url) {
+    corpo.add([sprite("galego", { width: 54, height: 64 }), pos(5, -22)]);
+  } else {
+    corpo.add([rect(40, 40, { radius: 14 }), pos(11, 0), color(PELE), outline(3, TINTA)]);
+    corpo.add([rect(42, 12, { radius: 6 }), pos(10, -2), color(235, 235, 240), outline(2, TINTA)]);
+    corpo.add([circle(3), pos(24, 18), color(TINTA)]);
+    corpo.add([circle(3), pos(38, 18), color(TINTA)]);
+    corpo.add([rect(18, 6, { radius: 3 }), pos(22, 28), color(255, 255, 255), outline(2, TINTA)]);
+  }
+
+  // --- Kart ---
+  if (IMAGENS.moto.url) {
+    corpo.add([sprite("moto", { width: P_W, height: 40 }), pos(0, P_H - 40)]);
+  } else {
+    corpo.add([rect(6, 20, { radius: 3 }), pos(P_W - 16, P_H - 56), color(60, 55, 75), outline(2, TINTA)]); // volante
+    corpo.add([rect(P_W + 4, 24, { radius: 12 }), pos(-2, P_H - 38), color(COR.vermelho), outline(4, TINTA)]);
+    corpo.add([rect(P_W - 24, 5, { radius: 2 }), pos(10, P_H - 33), color(255, 255, 255), opacity(0.5)]);
+    corpo.add([escrever(String(idadeDoGalego()), 13), pos(P_W / 2, P_H - 24), anchor("center"), color(COR.amarelo)]);
+    for (const rx of [12, P_W - 12]) {
+      corpo.add([circle(14), pos(rx, P_H - 11), color(35, 32, 45), outline(3, TINTA)]);
+      corpo.add([circle(6), pos(rx, P_H - 11), color(210, 210, 225)]);
+      corpo.add([rect(12, 3), pos(rx, P_H - 11), anchor("center"), rotate(0), color(90, 90, 110), "raio"]);
+    }
+  }
+  return corpo;
+}
+
+// Texto que "estoura" e sobe (efeito de "+10")
+function balao(msg, p, cor = [255, 255, 255]) {
+  const b = add([
+    escrever(msg, 26),
+    pos(p),
+    anchor("center"),
+    color(...cor),
+    scale(0.3),
+    opacity(1),
+    move(UP, 80),
+    lifespan(0.9, { fade: 0.4 }),
+    z(50),
+  ]);
+  b.onUpdate(() => { b.scale = vec2(Math.min(1, b.scale.x + dt() * 6)); });
+}
+
+// ---------------------------------------------------------------------
+//  Cenário: céu, sol, nuvens, morros e estrada. velocidade() comanda o movimento.
+// ---------------------------------------------------------------------
+function nuvem(x, y, s, fator) {
+  const n = add([pos(x, y), z(-80), { fator }, "nuvem"]);
+  const bolas = [[0, 6, 20], [26, -6, 28], [56, 4, 22], [28, 12, 22]];
+  for (const [bx, by, r] of bolas) n.add([circle((r + 4) * s), pos(bx * s, by * s), color(TINTA)]);
+  for (const [bx, by, r] of bolas) n.add([circle(r * s), pos(bx * s, by * s), color(255, 255, 255)]);
+  n.add([circle(9 * s), pos(16 * s, -8 * s), color(255, 255, 255)]);
+  return n;
+}
+
+function morro(x, r, cor, zz, fator) {
+  const m = add([pos(x, CHAO_Y + r * 0.45), z(zz), { fator, r }, "morro"]);
+  m.add([circle(r + 4), color(TINTA)]);
+  m.add([circle(r), color(cor)]);
+  m.add([circle(r * 0.18), pos(-r * 0.35, -r * 0.55), color(255, 255, 255), opacity(0.2)]);
+  return m;
+}
+
+function montarCenario(velocidade) {
+  // céu em degradê
+  add([z(-100), { draw() {
+    drawRect({ width: width(), height: CHAO_Y, gradient: [COR.ceuTopo, COR.ceuBase] });
+  } }]);
+
+  // sol sorridente com raios girando
+  const sol = add([pos(860, 86), z(-90)]);
+  const raios = sol.add([rotate(0)]);
+  for (let i = 0; i < 10; i++) {
+    raios.add([rect(14, 26, { radius: 7 }), anchor("center"), rotate(i * 36), pos(Vec2.fromAngle(i * 36 - 90).scale(62)), color(255, 200, 40), outline(3, TINTA)]);
+  }
+  raios.onUpdate(() => { raios.angle += 20 * dt(); });
+  sol.add([circle(44), color(255, 225, 70), outline(4, TINTA)]);
+  sol.add([circle(5), pos(-14, -8), color(TINTA)]);
+  sol.add([circle(5), pos(14, -8), color(TINTA)]);
+  sol.add([rect(26, 9, { radius: 5 }), pos(0, 14), anchor("center"), color(TINTA)]);
+  sol.add([circle(7), pos(-26, 8), color(255, 150, 120), opacity(0.7)]);
+  sol.add([circle(7), pos(26, 8), color(255, 150, 120), opacity(0.7)]);
+
+  for (let i = 0; i < 5; i++) nuvem(rand(0, width()), rand(40, 190), rand(0.7, 1.15), rand(0.06, 0.18));
+  onUpdate("nuvem", (n) => {
+    n.move(-velocidade() * n.fator - 12, 0);
+    if (n.pos.x < -120) n.pos.x = width() + rand(20, 200);
+  });
+
+  for (let i = 0; i < 5; i++) morro(i * 260 + rand(-40, 40), rand(150, 210), COR.morroLonge, -60, 0.15);
+  for (let i = 0; i < 4; i++) morro(i * 320 + 120 + rand(-40, 40), rand(100, 140), COR.morroPerto, -55, 0.3);
+  onUpdate("morro", (m) => {
+    m.move(-velocidade() * m.fator, 0);
+    if (m.pos.x < -m.r - 10) m.pos.x += 1300 + rand(0, 100);
+  });
+
+  // estrada
+  add([rect(width(), height() - CHAO_Y), pos(0, CHAO_Y), color(COR.asfalto), z(-10)]);
+  add([rect(width(), 4), pos(0, CHAO_Y - 2), color(TINTA), z(-8)]);
+  const N_GUIAS = Math.ceil(width() / 40) + 2;
+  for (let i = 0; i < N_GUIAS; i++) {
+    add([rect(40, 12), pos(i * 40, CHAO_Y + 2), color(i % 2 ? rgb(255, 255, 255) : COR.vermelho), z(-9), "guia"]);
+  }
+  add([rect(width(), 3), pos(0, CHAO_Y + 14), color(TINTA), z(-8)]);
+  onUpdate("guia", (g) => {
+    g.move(-velocidade(), 0);
+    if (g.pos.x < -40) g.pos.x += 40 * N_GUIAS;
+  });
+  const N_FAIXAS = Math.ceil(width() / 120) + 1;
+  for (let i = 0; i < N_FAIXAS; i++) {
+    add([rect(56, 8, { radius: 4 }), pos(i * 120, CHAO_Y + 44), color(COR.amarelo), outline(2, TINTA), z(-9), "faixa"]);
+  }
+  onUpdate("faixa", (f) => {
+    f.move(-velocidade(), 0);
+    if (f.pos.x < -60) f.pos.x += 120 * N_FAIXAS;
+  });
+
+  onUpdate("raio", (r) => { r.angle += VEL_ATUAL * dt() * 2.2; });
+}
+
+// =====================================================================
+//  CENA: INÍCIO
+// =====================================================================
+scene("inicio", () => {
+  VEL_ATUAL = 80;
+  montarCenario(() => 80);
+
+  // Título com letras dançando
+  add([escrever("A FUGA DO", 34), pos(width() / 2, 42), anchor("center"), color(255, 255, 255), z(60)]);
+  const TITULO = "GALEGO";
+  const passo = 62;
+  [...TITULO].forEach((letra, i) => {
+    const l = add([
+      escrever(letra, 84), pos(width() / 2 + (i - (TITULO.length - 1) / 2) * passo, 104),
+      anchor("center"), color(COR.amarelo), rotate(0), z(60),
+    ]);
+    l.onUpdate(() => {
+      l.pos.y = 104 + Math.sin(time() * 4 + i * 0.7) * 6;
+      l.angle = Math.sin(time() * 3 + i) * 5;
+    });
+  });
+
+  // Faixa com a idade
+  bloco(null, 560, 34, width() / 2, 166, COR.vermelho, { anchor: "center", z: 60 });
+  add([
+    escrever(`Nascido em 28/07/1959 · ${idadeDoGalego()} anos de pura teimosia`, 19),
+    pos(width() / 2, 167), anchor("center"), color(255, 255, 255), z(61),
+  ]);
+
+  // Cartões com os personagens
+  function cartao(x, w, rotulo, corEtiqueta) {
+    const c = add([pos(x, 196), z(55)]);
+    c.add([rect(w, 150, { radius: 20 }), pos(0, 6), color(TINTA)]);
+    c.add([rect(w, 150, { radius: 20 }), color(COR.creme), outline(4, TINTA)]);
+    const larg = Math.max(110, rotulo.length * 12 + 30);
+    c.add([rect(larg, 34, { radius: 17 }), pos(w / 2, 150), anchor("center"), color(corEtiqueta), outline(4, TINTA)]);
+    c.add([escrever(rotulo, 20), pos(w / 2, 151), anchor("center"), color(255, 255, 255)]);
+    return c;
+  }
+  const c1 = cartao(60, 170, "O GALEGO", COR.azul);
+  if (IMAGENS.piloto.url) montarGalego(c1.add([pos(59, 63), scale(0.75)]));
+  else montarGalego(c1.add([pos(50, 36)]));
+  const c2 = cartao(250, 140, "PEGUE!", COR.verde);
+  const cartaoCocas = IMAGENS.coca.url ? [[40, 16, -10, 26, 99], [78, 22, 8, 26, 99]] : [[34, 40, -10, 30, 56], [74, 46, 8, 30, 56]];
+  for (const [x, y, a, w, h] of cartaoCocas) iconeCoca(c2.add([pos(x, y), rotate(a)]), w, h);
+  const c3 = cartao(410, 210, "FUJA!", COR.vermelho);
+  desenharRemedio(c3.add([pos(28, 62)]), 60, 50);
+  desenharHalter(c3.add([pos(110, 76)]), 74, 38);
+  const c4 = cartao(640, 260, "SUBA EM CIMA!", COR.laranja);
+  desenharCarro(c4.add([pos(40, 46)]), 180, 74);
+
+  botao("JOGAR!", width() / 2, 408, 230, 60, COR.verde);
+  add([
+    escrever("ESPAÇO ou TOQUE = pular  -  segure para pular mais alto", 19),
+    pos(width() / 2, 503), anchor("center"), color(255, 255, 255), z(60),
+  ]);
+
+  // Recorde
+  bloco(null, 190, 42, 16, 16, COR.amarelo, { raio: 21, z: 60 });
+  add([escrever(`RECORDE: ${lerRecorde()}`, 22, { liso: true }), pos(111, 38), anchor("center"), color(TINTA), z(61)]);
+
+  if (IMAGEM_BLOQUEADA) {
+    add([rect(width(), 34), pos(0, 190), color(200, 0, 0), z(90)]);
+    add([
+      escrever("Fotos bloqueadas no file://  -  rode na pasta: python3 -m http.server", 16),
+      pos(width() / 2, 207), anchor("center"), color(255, 255, 255), z(91),
+    ]);
+  }
+
+  onKeyPress("space", () => go("jogo"));
+  onMousePress(() => go("jogo"));
+});
+
+// =====================================================================
+//  CENA: JOGO
+// =====================================================================
+scene("jogo", () => {
+  setGravity(GRAVIDADE);
+
+  let velocidade = VEL_INICIAL;
+  let distancia = 0;
+  let bonus = 0;
+  let cocas = 0;
+  let tempo = 0;
+  let vivo = true;
+  const pontos = () => Math.floor(distancia / 50) + bonus;
+
+  montarCenario(() => velocidade);
+
+  // Chão (sólido, invisível: a estrada já está desenhada)
+  add([rect(width(), height() - CHAO_Y), pos(0, CHAO_Y), opacity(0), area(), body({ isStatic: true }), "chao"]);
+
+  // ---------- O Galego ----------
+  const galego = add([
+    pos(GALEGO_X, CHAO_Y - P_H),
+    // hitbox: da cintura até as rodas, na largura da moto (sem a fumaça). Sem foto, o kart.
+    area({ shape: IMAGENS.piloto.url ? new Rect(vec2(-8, 20), 88, P_H - 20) : new Rect(vec2(8, 4), P_W - 16, P_H - 4) }),
+    body({ jumpForce: FORCA_PULO, stickToPlatform: false }),
+    z(10),
+    "player",
+  ]);
+  const corpo = montarGalego(galego);
+
+  // ---------- Pulo fluido (buffer + coyote time + altura variável) ----------
+  let pediuPuloEm = -10;
+  let noChaoEm = -10;
+
+  function pedirPulo() { pediuPuloEm = time(); }
+  function soltarPulo() {
+    if (galego.vel && galego.vel.y < 0) galego.vel.y *= CORTE_PULO;
+  }
+  for (const k of ["space", "up", "w"]) {
+    onKeyPress(k, pedirPulo);
+    onKeyRelease(k, soltarPulo);
+  }
+  onMousePress(pedirPulo);      // clique e toque no celular
+  onMouseRelease(soltarPulo);
+
+  galego.onUpdate(() => {
+    const noChao = galego.isGrounded();
+    if (noChao) noChaoEm = time();
+
+    // pula se apertou há pouco (buffer) e estava no chão há pouco (coyote)
+    if (time() - pediuPuloEm < 0.12 && time() - noChaoEm < 0.1) {
+      galego.jump(FORCA_PULO);
+      pediuPuloEm = -10;
+      noChaoEm = -10;
+    }
+
+    // Se o carro de som empurrar o Galego, ele tenta voltar pro lugar
+    if (galego.pos.x < GALEGO_X) galego.pos.x = Math.min(GALEGO_X, galego.pos.x + 120 * dt());
+    if (galego.pos.x > GALEGO_X) galego.pos.x = GALEGO_X;
+    if (galego.pos.x < -P_W + 10) fimDeJogo("carro");
+
+    // Animação: tremidinha do kart no chão, inclinação no ar
+    if (noChao) {
+      corpo.pos.y = Math.sin(time() * 30) * 1.5;
+      corpo.angle = 0;
+    } else {
+      corpo.pos.y = 0;
+      const vy = galego.vel ? galego.vel.y : 0;
+      corpo.angle = Math.max(-15, Math.min(15, vy * 0.02));
+    }
+  });
+
+  // Fumacinha do escapamento
+  loop(0.09, () => {
+    if (!vivo || !galego.isGrounded()) return;
+    add([
+      circle(rand(5, 9)),
+      pos(IMAGENS.piloto.url ? galego.pos.add(-14, 52 + rand(-3, 3)) : galego.pos.add(-2, P_H - 24 + rand(-3, 3))),
+      color(240, 240, 250), outline(2, TINTA), opacity(0.9),
+      move(LEFT, velocidade * 0.35 + 60), lifespan(0.35, { fade: 0.25 }), z(5),
+    ]);
+  });
+
+  // ---------- Movimento de tudo que vem da direita ----------
+  onUpdate("scroll", (o) => {
+    o.move(-velocidade, 0);
+    if (o.pos.x < -400) destroy(o);
+  });
+  onUpdate("coca", (c) => {
+    c.pos.y = c.baseY + Math.sin(time() * 6 + c.fase) * 4; // flutuando
+    c.angle = Math.sin(time() * 4 + c.fase) * 8;
+  });
+
+  // ---------- Spawners ----------
+  // x, y: canto de uma lata de 26 x 50; a garrafa fica centrada nela, com a mesma base
+  function spawnCoca(x, y) {
+    const cx = x + 13 - COCA.w / 2, cy = y + 50 - COCA.h;
+    criarObj("coca", COCA.w, COCA.h, cx, cy, [
+      area({ shape: new Rect(vec2(0, 0), COCA.w, COCA.h) }), rotate(0),
+      "scroll", "coca", { baseY: cy, fase: rand(0, 6) },
+    ]);
+  }
+
+  function spawnCocas() {
+    const n = randi(2, 6);
+    const altura = choose([0, 0, 90, 150]);
+    const y = CHAO_Y - 60 - altura;
+    for (let i = 0; i < n; i++) spawnCoca(width() + 20 + i * 55, y);
+    return n * 55;
+  }
+
+  function spawnObstaculo() {
+    const tipo = choose(["remedio", "halter"]);
+    const [w, h] = tipo === "remedio" ? [50, 44] : [70, 36];
+    const x = width() + 20;
+    // Depois de 25s às vezes vem remédio empilhado (caixa dupla)
+    const empilhado = tipo === "remedio" && tempo > 25 && rand() < 0.3;
+    const hh = empilhado ? h * 2 : h;
+    criarObj(tipo, w, hh, x, CHAO_Y - hh, [
+      area({ shape: new Rect(vec2(w * 0.12, hh * 0.15), w * 0.76, hh * 0.85) }),
+      "scroll", "perigo", { tipo },
+    ]);
+    // às vezes uma Coca de recompensa em cima do obstáculo
+    if (rand() < 0.4) spawnCoca(x + w / 2 - 13, CHAO_Y - hh - 110);
+    return w;
+  }
+
+  function spawnCarro() {
+    const w = 220, h = 90;
+    const x = width() + 20;
+    criarObj("carro_som", w, h, x, CHAO_Y - h, [
+      area({ shape: new Rect(vec2(0, 0), w, h) }), body({ isStatic: true }), "scroll", "carro", { subiu: false },
+    ]);
+    // Cocas em cima do carro
+    for (let i = 0; i < 3; i++) spawnCoca(x + 45 + i * 60, CHAO_Y - h - 75);
+
+    // Desafio: halter logo depois do carro (pule do carro por cima dele!)
+    if (tempo > 15 && rand() < 0.35) {
+      criarObj("halter", 70, 36, x + w + 70, CHAO_Y - 36, [
+        area({ shape: new Rect(vec2(8, 5), 54, 31) }), "scroll", "perigo", { tipo: "halter" },
+      ]);
+      return w + 140;
+    }
+    return w;
+  }
+
+  function proximoSpawn() {
+    if (!vivo) return;
+    let largura;
+    const r = rand();
+    if (tempo < 2)       largura = spawnCocas();      // começo tranquilo
+    else if (r < 0.42)   largura = spawnObstaculo();
+    else if (r < 0.62)   largura = spawnCarro();
+    else                 largura = spawnCocas();
+    // espaço entre um spawn e outro (em pixels) convertido em tempo
+    const espaco = largura + rand(330, 650);
+    wait(espaco / velocidade, proximoSpawn);
+  }
+  wait(0.8, proximoSpawn);
+
+  // ---------- Colisões ----------
+  // Cocas em sequência: só a primeira ganha frase; as outras viram "+10" empilhado
+  let ultimaCocaEm = -10, sequencia = 0;
+  galego.onCollide("coca", (c) => {
+    sequencia = time() - ultimaCocaEm < 0.6 ? sequencia + 1 : 0;
+    ultimaCocaEm = time();
+    if (sequencia === 0) balao(choose(FRASES_COCA), c.pos.add(COCA.w / 2, -10), [255, 230, 80]);
+    else balao("+10", c.pos.add(COCA.w / 2, -10 - sequencia * 32), [255, 230, 80]);
+    destroy(c);
+    cocas++;
+    bonus += 10;
+    velocidade = Math.min(VEL_MAX, velocidade + BOOST_COCA);
+  });
+
+  galego.onCollide("perigo", (p) => fimDeJogo(p.tipo));
+
+  galego.onGround(() => {
+    const plat = galego.curPlatform();
+    if (plat && plat.is("carro") && !plat.subiu) {
+      plat.subiu = true;
+      bonus += 25;
+      balao("AUMENTA O SOM! +25", galego.pos.add(P_W / 2, IMAGENS.piloto.url ? PILOTO.y - 16 : -20), [255, 170, 40]);
+    }
+  });
+
+  // ---------- Placar (HUD) ----------
+  const hud = add([pos(14, 14), fixed(), z(100)]);
+  hud.add([rect(300, 84, { radius: 22 }), pos(0, 6), color(TINTA)]);
+  hud.add([rect(300, 84, { radius: 22 }), color(COR.creme), outline(4, TINTA)]);
+  const hudPontos = hud.add([escrever("0", 34), pos(20, 8), color(COR.amarelo)]);
+  hud.add([escrever("pts", 20, { liso: true }), pos(222, 22), color(TINTA)]);
+  if (IMAGENS.coca.url) iconeCoca(hud.add([pos(23, 48)]), 9, 34);
+  else desenharCoca(hud.add([pos(20, 52), scale(0.5)]), 26, 50);
+  const hudCocas = hud.add([escrever("x 0", 22, { liso: true }), pos(40, 54), color(TINTA)]);
+  hud.add([escrever("VEL", 18, { liso: true }), pos(116, 56), color(TINTA)]);
+  hud.add([rect(130, 16, { radius: 8 }), pos(154, 58), color(255, 255, 255), outline(3, TINTA)]);
+  const barra = hud.add([rect(10, 10, { radius: 5 }), pos(157, 61), color(COR.laranja)]);
+
+  onUpdate(() => {
+    VEL_ATUAL = velocidade;
+    if (!vivo) return;
+    tempo += dt();
+    velocidade = Math.min(VEL_MAX, velocidade + 6 * dt()); // fica mais difícil com o tempo
+    distancia += velocidade * dt();
+    hudPontos.text = String(pontos());
+    hudCocas.text  = `x ${cocas}`;
+    const t = (velocidade - VEL_INICIAL) / (VEL_MAX - VEL_INICIAL);
+    barra.width = 10 + 114 * t;
+    barra.color = t > 0.7 ? COR.vermelho : COR.laranja;
+  });
+
+  // ---------- Game Over ----------
+  function fimDeJogo(motivo) {
+    if (!vivo) return;
+    vivo = false;
+    velocidade = 0;
+    shake(14);
+    balao("NÃÃÃO!", galego.pos.add(P_W / 2, IMAGENS.piloto.url ? PILOTO.y - 16 : -20), [255, 90, 90]);
+    const final = pontos();
+    const recorde = Math.max(final, lerRecorde());
+    salvarRecorde(recorde);
+    wait(0.7, () => go("fim", { motivo, pontos: final, cocas, recorde, novoRecorde: final >= recorde && final > 0 }));
+  }
+});
+
+// =====================================================================
+//  CENA: FIM DE JOGO
+// =====================================================================
+scene("fim", ({ motivo, pontos, cocas, recorde, novoRecorde }) => {
+  VEL_ATUAL = 0;
+  montarCenario(() => 30);
+  add([rect(width(), height()), color(20, 10, 40), opacity(0.5), z(50)]);
+
+  const MENSAGENS = {
+    remedio: ["O Galego tomou o REMÉDIO...", "Ele fez algo sensato. Inaceitável!"],
+    halter:  ["O Galego encostou num HALTER...", "Exercício?! Desmaiou de desgosto!"],
+    carro:   ["Ficou pra trás do carro de som!", "É pra subir EM CIMA, não na frente!"],
+  };
+  const [titulo, sub] = MENSAGENS[motivo] || ["Fim de jogo!", ""];
+
+  // Painel
+  const painel = add([pos(width() / 2, 268), anchor("center"), z(60)]);
+  painel.add([rect(600, 360, { radius: 30 }), anchor("center"), pos(0, 8), color(TINTA)]);
+  painel.add([rect(600, 360, { radius: 30 }), anchor("center"), color(COR.creme), outline(6, TINTA)]);
+  painel.add([rect(330, 72, { radius: 36 }), anchor("center"), pos(0, -178), color(COR.vermelho), outline(5, TINTA)]);
+  painel.add([escrever("GAME OVER", 48), anchor("center"), pos(0, -176), color(COR.amarelo)]);
+
+  painel.add([escrever(titulo, 28, { liso: true }), anchor("center"), pos(0, -108), color(TINTA)]);
+  painel.add([escrever(sub, 20, { liso: true, largura: 520 }), anchor("center"), pos(0, -74), color(200, 70, 40)]);
+
+  // Caixinhas de pontos e cocas
+  for (const [x, rotulo, valor, cor] of [[-120, "PONTOS", pontos, COR.azul], [120, "COCAS", cocas, COR.vermelho]]) {
+    painel.add([rect(200, 96, { radius: 20 }), anchor("center"), pos(x, 4), color(cor), outline(4, TINTA)]);
+    painel.add([escrever(rotulo, 18), anchor("center"), pos(x, -24), color(255, 255, 255)]);
+    painel.add([escrever(String(valor), 44), anchor("center"), pos(x, 18), color(COR.amarelo)]);
+  }
+
+  const rec = painel.add([
+    escrever(novoRecorde ? "NOVO RECORDE!!!" : `Recorde: ${recorde}`, novoRecorde ? 30 : 24, { liso: !novoRecorde }),
+    anchor("center"), pos(0, 82), color(novoRecorde ? COR.laranja : TINTA), scale(1),
+  ]);
+  if (novoRecorde) rec.onUpdate(() => { rec.scale = vec2(1 + Math.sin(time() * 8) * 0.08); });
+
+  // Cabeção tonto no canto do painel
+  if (IMAGENS.galego.url) {
+    const cab = add([sprite("galego", { width: 96, height: 114 }), pos(212, 132), anchor("center"), rotate(-14), z(70)]);
+    cab.onUpdate(() => { cab.angle = -14 + Math.sin(time() * 3) * 6; });
+    for (let i = 0; i < 3; i++) {
+      const e = add([escrever("*", 34), pos(212, 70), anchor("center"), color(COR.amarelo), z(71)]);
+      e.onUpdate(() => {
+        const a = time() * 3 + i * 2.1;
+        e.pos = vec2(212 + Math.cos(a) * 46, 76 + Math.sin(a) * 12);
+      });
+    }
+  }
+
+  botao("FUGIR DE NOVO!", width() / 2, 410, 320, 60, COR.verde);
+  add([
+    escrever("ESPAÇO ou toque na tela", 18), pos(width() / 2, 505), anchor("center"), color(255, 255, 255), z(60),
+  ]);
+
+  // pequena pausa pra ninguém reiniciar sem querer
+  let pode = false;
+  wait(0.6, () => { pode = true; });
+  const reiniciar = () => { if (pode) go("jogo"); };
+  onKeyPress("space", reiniciar);
+  onMousePress(reiniciar);
+});
+
+go("inicio");
+</script>
+</body>
+</html>
