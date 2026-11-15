@@ -30,10 +30,27 @@
       transform-origin: center;
     }
     #jogo { display: block; }
+    #som {
+      position: absolute;
+      right: 18px;
+      bottom: 22px;
+      width: 58px;
+      height: 58px;
+      border-radius: 50%;
+      border: 4px solid #2a1f4a;
+      background: #fff6dc;
+      box-shadow: 0 5px 0 #2a1f4a;
+      font-size: 28px;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #som:active { transform: translateY(4px); box-shadow: 0 1px 0 #2a1f4a; }
   </style>
 </head>
 <body>
-<div id="palco"><canvas id="jogo"></canvas></div>
+<div id="palco"><canvas id="jogo"></canvas><button id="som" type="button" tabindex="-1"></button></div>
 <!-- Kaboom.js via CDN (versão fixa para não quebrar no futuro) -->
 <script src="https://unpkg.com/kaboom@3000.1.17/dist/kaboom.js"></script>
 <script>
@@ -156,6 +173,129 @@ function lerRecorde() {
 function salvarRecorde(v) {
   try { localStorage.setItem("galego_recorde", String(v)); } catch (e) { /* sem storage, tudo bem */ }
 }
+
+// ---------------------------------------------------------------------
+//  Música de fundo: chiptune original gerado na hora (Web Audio), sem arquivos.
+//  Só começa no primeiro toque/tecla (regra dos navegadores, principalmente o iPhone).
+// ---------------------------------------------------------------------
+const Musica = (() => {
+  // Melodia em colchetes (8 por compasso): nota, "-" segura a anterior, "." pausa
+  const MELODIA = [
+    "E5 G5 . G5 A5 G5 E5 .",   "C5 . E5 . D5 C5 A4 .",
+    "F5 . A5 . G5 F5 E5 D5",   "D5 . G5 . F5 E5 D5 .",
+    "G5 . E5 G5 C6 . B5 A5",   "A5 . E5 . A5 G5 E5 .",
+    "F5 G5 A5 . C6 . A5 F5",   "G5 . D5 . G4 - . .",
+  ].map((c) => c.split(" "));
+  const BAIXO = ["C3", "A2", "F2", "G2", "C3", "A2", "F2", "G2"]; // Dó, Lá m, Fá, Sol
+  const NOTAS = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const freq = (n) => 440 * Math.pow(2, (NOTAS[n[0]] + 12 * (Number(n.slice(1)) + 1) - 69) / 12);
+
+  let ctx = null, mestre = null, ruido = null, timer = null;
+  let passo = 0, proximo = 0, bpm = 132;
+  let mudo = false;
+  try { mudo = localStorage.getItem("galego_mudo") === "1"; } catch (e) { /* sem storage */ }
+
+  function tom(tipo, f, t, dur, vol) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = tipo; o.frequency.value = f;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(mestre); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function chiado(t, dur, vol, corte) {
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = ruido; f.type = "highpass"; f.frequency.value = corte;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f).connect(g).connect(mestre); s.start(t); s.stop(t + dur + 0.02);
+  }
+  function bumbo(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+    o.connect(g).connect(mestre); o.start(t); o.stop(t + 0.17);
+  }
+
+  // um passo = colcheia; 8 passos por compasso, 8 compassos no loop
+  function tocarPasso(i, t) {
+    const colcheia = 30 / bpm, compasso = Math.floor(i / 8) % 8, k = i % 8;
+    const nota = MELODIA[compasso][k];
+    if (nota !== "-" && nota !== ".") {
+      let dur = colcheia * 0.9;
+      for (let j = k + 1; j < 8 && MELODIA[compasso][j] === "-"; j++) dur += colcheia;
+      tom("square", freq(nota), t, dur, 0.05);
+    }
+    const raiz = freq(BAIXO[compasso]);
+    tom("triangle", k % 2 ? raiz * 2 : raiz, t, colcheia * 0.8, 0.16);
+    if (k % 4 === 0) bumbo(t);
+    if (k % 4 === 2) chiado(t, 0.12, 0.12, 1500);   // caixa
+    chiado(t, 0.03, k % 2 ? 0.05 : 0.025, 7000);     // chimbal
+  }
+
+  function agendar() {
+    while (proximo < ctx.currentTime + 0.15) {
+      tocarPasso(passo++, proximo);
+      proximo += 30 / bpm;
+    }
+  }
+
+  function iniciar() {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ctx = new AC();
+      mestre = ctx.createGain();
+      mestre.gain.value = mudo ? 0 : 0.35;
+      mestre.connect(ctx.destination);
+      ruido = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = ruido.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    if (ctx.state !== "running") ctx.resume();
+    if (!timer) { proximo = ctx.currentTime + 0.05; timer = setInterval(agendar, 25); }
+  }
+
+  function alternar() {
+    mudo = !mudo;
+    try { localStorage.setItem("galego_mudo", mudo ? "1" : "0"); } catch (e) { /* sem storage */ }
+    if (mestre) mestre.gain.setTargetAtTime(mudo ? 0 : 0.35, ctx.currentTime, 0.05);
+    return mudo;
+  }
+
+  // "Uó-uó-uó" de quando o Galego bate
+  function tropeco() {
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.02;
+    ["G4", "F4", "E4", "D4"].forEach((n, i) => tom("square", freq(n), t + i * 0.16, i === 3 ? 0.5 : 0.15, 0.07));
+  }
+
+  // pausa quando a aba/app fica em segundo plano
+  document.addEventListener("visibilitychange", () => {
+    if (!ctx) return;
+    if (document.hidden) ctx.suspend(); else ctx.resume();
+  });
+
+  return {
+    iniciar, alternar, tropeco,
+    get mudo() { return mudo; },
+    ritmo(novo) { bpm = novo; },
+  };
+})();
+
+// primeiro toque ou tecla liga a música (o iPhone só libera áudio num gesto do usuário)
+for (const ev of ["pointerdown", "touchend", "keydown", "click"]) {
+  document.addEventListener(ev, () => Musica.iniciar(), { passive: true });
+}
+
+// Botão de som (HTML por cima do jogo; gira junto com o palco)
+const BOTAO_SOM = document.getElementById("som");
+function mostrarSom() {
+  BOTAO_SOM.textContent = Musica.mudo ? "🔇" : "🔊";
+  BOTAO_SOM.setAttribute("aria-label", Musica.mudo ? "Ligar som" : "Desligar som");
+}
+BOTAO_SOM.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); });
+BOTAO_SOM.addEventListener("click", (e) => { e.stopPropagation(); Musica.alternar(); mostrarSom(); });
+window.addEventListener("keydown", (e) => { if (e.key === "m" || e.key === "M") { Musica.alternar(); mostrarSom(); } });
+mostrarSom();
 
 // Velocidade usada pelas rodas e pelo cenário da cena atual.
 let VEL_ATUAL = 0;
@@ -417,6 +557,7 @@ function montarCenario(velocidade) {
 // =====================================================================
 scene("inicio", () => {
   VEL_ATUAL = 80;
+  Musica.ritmo(132);
   montarCenario(() => 80);
 
   // Título com letras dançando
@@ -693,6 +834,7 @@ scene("jogo", () => {
     hudCocas.text  = `x ${cocas}`;
     const t = (velocidade - VEL_INICIAL) / (VEL_MAX - VEL_INICIAL);
     barra.width = 10 + 114 * t;
+    Musica.ritmo(132 + Math.round(t * 36));   // a música acelera junto com a moto
     barra.color = t > 0.7 ? COR.vermelho : COR.laranja;
   });
 
@@ -700,6 +842,7 @@ scene("jogo", () => {
   function fimDeJogo(motivo) {
     if (!vivo) return;
     vivo = false;
+    Musica.tropeco();
     velocidade = 0;
     shake(14);
     balao("NÃÃÃO!", galego.pos.add(P_W / 2, IMAGENS.piloto.url ? PILOTO.y - 16 : -20), [255, 90, 90]);
@@ -715,6 +858,7 @@ scene("jogo", () => {
 // =====================================================================
 scene("fim", ({ motivo, pontos, cocas, recorde, novoRecorde }) => {
   VEL_ATUAL = 0;
+  Musica.ritmo(120);
   montarCenario(() => 30);
   add([rect(width(), height()), color(20, 10, 40), opacity(0.5), z(50)]);
 
