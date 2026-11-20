@@ -121,6 +121,7 @@ const IMAGENS = {
   coca:      { url: "img/coca.png" }, // garrafa de 1 litro (fundo transparente)
   remedio:   { url: "" /* (OPCIONAL) imagem da caixa de remédio, ex: "img/remedio.png" */ },
   halter:    { url: "" /* (OPCIONAL) imagem do halter, ex: "img/halter.png" */ },
+  herculano: { url: "img/herculano.png" },
   carro_som: { url: "" /* (OPCIONAL) imagem do carro de som, ex: "img/carro_som.png" */ },
 };
 
@@ -231,9 +232,22 @@ const Musica = (() => {
     chiado(t, 0.03, k % 2 ? 0.05 : 0.025, 7000);     // chimbal
   }
 
+  const NOTAS_REFRAO = ["C5", "E5", "G5", "A5", "G5", "E5", "D5", "G5"];
+  let inicioRefrao = null;
+
+  function tocarRefrao(i, t) {
+    const k = (i - inicioRefrao) % NOTAS_REFRAO.length;
+    tom("square", freq(NOTAS_REFRAO[k]), t, 24 / bpm, 0.065);
+    tom("triangle", freq(k < 4 ? "C3" : "G3"), t, 24 / bpm, 0.15);
+    if (k % 2 === 0) bumbo(t);
+    if (k % 2 === 1) chiado(t, 0.05, 0.10, 4000);
+  }
+
   function agendar() {
     while (proximo < ctx.currentTime + 0.15) {
-      tocarPasso(passo++, proximo);
+      if (inicioRefrao === null) tocarPasso(passo, proximo);
+      else tocarRefrao(passo, proximo);
+      passo++;
       proximo += 30 / bpm;
     }
   }
@@ -278,6 +292,8 @@ const Musica = (() => {
     iniciar, alternar, tropeco,
     get mudo() { return mudo; },
     ritmo(novo) { bpm = novo; },
+    iniciarRefrao() { inicioRefrao = passo; },
+    encerrarRefrao() { inicioRefrao = null; },
   };
 })();
 
@@ -384,7 +400,11 @@ function desenharCarro(o, w, h) {
   for (const cx of [100, 142]) {
     o.add([circle(15 * s), pos(cx * sx, 19 * sy), color(105, 100, 130), outline(3 * s, TINTA)]);
     const cone = o.add([circle(7 * s), pos(cx * sx, 19 * sy), color(30, 28, 45), scale(1)]);
-    cone.onUpdate(() => { cone.scale = vec2(1 + Math.abs(Math.sin(time() * 9)) * 0.35); });
+    cone.onUpdate(() => {
+      const batida = Math.abs(Math.sin(time() * 9));
+      cone.scale = vec2(1 + batida * 0.35);
+      cone.color = batida > 0.6 ? COR.amarelo : rgb(30, 28, 45);
+    });
   }
   for (const ty of [11, 27]) o.add([circle(5 * s), pos(186 * sx, ty * sy), color(105, 100, 130), outline(2 * s, TINTA)]);
   B(160, 34, 60, 38, COR.amarelo, 6);                    // carroceria
@@ -599,8 +619,9 @@ scene("inicio", () => {
   const cartaoCocas = IMAGENS.coca.url ? [[40, 16, -10, 26, 99], [78, 22, 8, 26, 99]] : [[34, 40, -10, 30, 56], [74, 46, 8, 30, 56]];
   for (const [x, y, a, w, h] of cartaoCocas) iconeCoca(c2.add([pos(x, y), rotate(a)]), w, h);
   const c3 = cartao(410, 210, "FUJA!", COR.vermelho);
-  desenharRemedio(c3.add([pos(28, 62)]), 60, 50);
-  desenharHalter(c3.add([pos(110, 76)]), 74, 38);
+  desenharRemedio(c3.add([pos(17, 68)]), 46, 42);
+  desenharHalter(c3.add([pos(73, 80)]), 54, 30);
+  if (IMAGENS.herculano.url) c3.add([sprite("herculano", { width: 36, height: 84 }), pos(150, 27)]);
   const c4 = cartao(640, 260, "SUBA EM CIMA!", COR.laranja);
   desenharCarro(c4.add([pos(40, 46)]), 180, 74);
 
@@ -638,6 +659,11 @@ scene("jogo", () => {
   let cocas = 0;
   let tempo = 0;
   let vivo = true;
+  let carroNaPista = null;
+  let teto = null;
+  let showAte = 0;
+  let cocasNoAr = 0;
+  let peAnterior = CHAO_Y;
   const pontos = () => Math.floor(distancia / 50) + bonus;
 
   montarCenario(() => velocidade);
@@ -672,20 +698,32 @@ scene("jogo", () => {
   onMouseRelease(soltarPulo);
 
   galego.onUpdate(() => {
-    const noChao = galego.isGrounded();
+    if (!vivo) return;
+    const pe = galego.pos.y + P_H;
+    const sobreCarro = carroNaPista && galego.pos.x + P_W > carroNaPista.pos.x + 66
+      && galego.pos.x + 8 < carroNaPista.pos.x + 216;
+    // O teto só é sólido quando as rodas chegam por cima.
+    if (!teto && sobreCarro && peAnterior <= carroNaPista.pos.y && pe >= carroNaPista.pos.y && galego.vel.y >= 0) {
+      teto = carroNaPista;
+      pousarNoCarro(teto);
+    }
+    if (teto && !sobreCarro) teto = null;
+    if (teto) {
+      galego.pos.y = teto.pos.y - P_H;
+      galego.vel.y = 0;
+    }
+    peAnterior = galego.pos.y + P_H;
+    const noChao = teto || galego.isGrounded();
     if (noChao) noChaoEm = time();
 
     // pula se apertou há pouco (buffer) e estava no chão há pouco (coyote)
     if (time() - pediuPuloEm < 0.12 && time() - noChaoEm < 0.1) {
       galego.jump(FORCA_PULO);
+      teto = null;
+      cocasNoAr = 0;
       pediuPuloEm = -10;
       noChaoEm = -10;
     }
-
-    // Se o carro de som empurrar o Galego, ele tenta voltar pro lugar
-    if (galego.pos.x < GALEGO_X) galego.pos.x = Math.min(GALEGO_X, galego.pos.x + 120 * dt());
-    if (galego.pos.x > GALEGO_X) galego.pos.x = GALEGO_X;
-    if (galego.pos.x < -P_W + 10) fimDeJogo("carro");
 
     // Animação: tremidinha do kart no chão, inclinação no ar
     if (noChao) {
@@ -711,8 +749,12 @@ scene("jogo", () => {
 
   // ---------- Movimento de tudo que vem da direita ----------
   onUpdate("scroll", (o) => {
+    if (!vivo || (o === carroNaPista && tempo < showAte)) return;
     o.move(-velocidade, 0);
-    if (o.pos.x < -400) destroy(o);
+    if (o.pos.x < -400) {
+      if (o === carroNaPista) carroNaPista = null;
+      destroy(o);
+    }
   });
   onUpdate("coca", (c) => {
     c.pos.y = c.baseY + Math.sin(time() * 6 + c.fase) * 4; // flutuando
@@ -723,7 +765,7 @@ scene("jogo", () => {
   // x, y: canto de uma lata de 26 x 50; a garrafa fica centrada nela, com a mesma base
   function spawnCoca(x, y) {
     const cx = x + 13 - COCA.w / 2, cy = y + 50 - COCA.h;
-    criarObj("coca", COCA.w, COCA.h, cx, cy, [
+    return criarObj("coca", COCA.w, COCA.h, cx, cy, [
       area({ shape: new Rect(vec2(0, 0), COCA.w, COCA.h) }), rotate(0),
       "scroll", "coca", { baseY: cy, fase: rand(0, 6) },
     ]);
@@ -753,63 +795,90 @@ scene("jogo", () => {
     return w;
   }
 
-  function spawnCarro() {
-    const w = 220, h = 90;
-    const x = width() + 20;
-    criarObj("carro_som", w, h, x, CHAO_Y - h, [
-      area({ shape: new Rect(vec2(0, 0), w, h) }), body({ isStatic: true }), "scroll", "carro", { subiu: false },
+  function spawnHerculano() {
+    const w = 48, h = 112;
+    const o = criarObj("herculano", w, h, width() + 20, CHAO_Y - h, [
+      area({ shape: new Rect(vec2(12, 9), 24, h - 9) }),
+      "scroll", "perigo", { tipo: "herculano" },
     ]);
-    // Cocas em cima do carro
-    for (let i = 0; i < 3; i++) spawnCoca(x + 45 + i * 60, CHAO_Y - h - 75);
-
-    // Desafio: halter logo depois do carro (pule do carro por cima dele!)
-    if (tempo > 15 && rand() < 0.35) {
-      criarObj("halter", 70, 36, x + w + 70, CHAO_Y - 36, [
-        area({ shape: new Rect(vec2(8, 5), 54, 31) }), "scroll", "perigo", { tipo: "halter" },
-      ]);
-      return w + 140;
-    }
+    o.add([escrever("HERCULANO", 19), pos(w / 2, -18), anchor("center"), color(COR.amarelo)]);
     return w;
   }
 
+  function spawnCarro() {
+    const w = 220, h = 90;
+    const x = width() + 20;
+    carroNaPista = criarObj("carro_som", w, h, x, CHAO_Y - h, ["scroll", z(2), { subiu: false }]);
+    spawnCoca(x + 110, CHAO_Y - h - 80);
+    spawnCoca(x + 280, CHAO_Y - 60);
+    spawnCoca(x + 335, CHAO_Y - 60);
+    return w;
+  }
+
+  let apresentouHerculano = false;
+  let apresentouCarro = false;
+  let distanciaDoSpawn = 0.8 * VEL_INICIAL;
   function proximoSpawn() {
-    if (!vivo) return;
     let largura;
     const r = rand();
-    if (tempo < 2)       largura = spawnCocas();      // começo tranquilo
-    else if (r < 0.42)   largura = spawnObstaculo();
-    else if (r < 0.62)   largura = spawnCarro();
-    else                 largura = spawnCocas();
-    // espaço entre um spawn e outro (em pixels) convertido em tempo
-    const espaco = largura + rand(330, 650);
-    wait(espaco / velocidade, proximoSpawn);
+    if (tempo < 2) largura = spawnCocas();
+    else if (IMAGENS.herculano.url && (!apresentouHerculano || r < 0.14)) {
+      apresentouHerculano = true;
+      largura = spawnHerculano();
+    } else if (!carroNaPista && (!apresentouCarro || r < 0.34)) {
+      apresentouCarro = true;
+      largura = spawnCarro();
+    } else if (r < 0.62) largura = spawnObstaculo();
+    else largura = spawnCocas();
+    distanciaDoSpawn = distancia + largura + rand(410, 650);
   }
-  wait(0.8, proximoSpawn);
 
   // ---------- Colisões ----------
   // Cocas em sequência: só a primeira ganha frase; as outras viram "+10" empilhado
   let ultimaCocaEm = -10, sequencia = 0;
   galego.onCollide("coca", (c) => {
+    if (!vivo) return;
     sequencia = time() - ultimaCocaEm < 0.6 ? sequencia + 1 : 0;
     ultimaCocaEm = time();
     if (sequencia === 0) balao(choose(FRASES_COCA), c.pos.add(COCA.w / 2, -10), [255, 230, 80]);
     else balao("+10", c.pos.add(COCA.w / 2, -10 - sequencia * 32), [255, 230, 80]);
     destroy(c);
     cocas++;
+    if (!teto && !galego.isGrounded()) cocasNoAr++;
     bonus += 10;
     velocidade = Math.min(VEL_MAX, velocidade + BOOST_COCA);
   });
 
   galego.onCollide("perigo", (p) => fimDeJogo(p.tipo));
 
-  galego.onGround(() => {
-    const plat = galego.curPlatform();
-    if (plat && plat.is("carro") && !plat.subiu) {
-      plat.subiu = true;
-      bonus += 25;
-      balao("AUMENTA O SOM! +25", galego.pos.add(P_W / 2, IMAGENS.piloto.url ? PILOTO.y - 16 : -20), [255, 170, 40]);
+  galego.onGround(() => { cocasNoAr = 0; });
+
+  let primeiraCocaDaOnda = null;
+  function pousarNoCarro(carro) {
+    const combo = cocasNoAr * 10;
+    cocasNoAr = 0;
+    const ponto = galego.pos.add(P_W / 2, -75);
+    if (combo) {
+      bonus += combo;
+      balao(`COMBO x2! +${combo}`, ponto, [255, 230, 80]);
     }
-  });
+    if (carro.subiu) return;
+    carro.subiu = true;
+    bonus += 25;
+    showAte = tempo + 8;
+    Musica.iniciarRefrao();
+    balao("AUMENTA O SOM! +25", ponto.add(0, -35), [255, 170, 40]);
+
+    for (const atraso of [0.8, 4.4]) {
+      wait(atraso, () => {
+        if (!vivo) return;
+        for (const [i, altura] of [126, 158, 158, 126].entries()) {
+          const coca = spawnCoca(GALEGO_X + velocidade * (0.95 + i * 0.09), carro.pos.y - altura);
+          if (i === 0) primeiraCocaDaOnda = coca;
+        }
+      });
+    }
+  }
 
   // ---------- Placar (HUD) ----------
   const hud = add([pos(14, 14), fixed(), z(100)]);
@@ -823,6 +892,9 @@ scene("jogo", () => {
   hud.add([escrever("VEL", 18, { liso: true }), pos(116, 56), color(TINTA)]);
   hud.add([rect(130, 16, { radius: 8 }), pos(154, 58), color(255, 255, 255), outline(3, TINTA)]);
   const barra = hud.add([rect(10, 10, { radius: 5 }), pos(157, 61), color(COR.laranja)]);
+  const hudShow = hud.add([
+    escrever("", 23), pos(width() / 2 - 14, 23), anchor("center"), color(COR.amarelo),
+  ]);
 
   onUpdate(() => {
     VEL_ATUAL = velocidade;
@@ -830,11 +902,19 @@ scene("jogo", () => {
     tempo += dt();
     velocidade = Math.min(VEL_MAX, velocidade + 6 * dt()); // fica mais difícil com o tempo
     distancia += velocidade * dt();
+    const noShow = tempo < showAte;
+    const carroChegando = carroNaPista && !carroNaPista.subiu && carroNaPista.pos.x + 216 > GALEGO_X;
+    if (!noShow && !carroChegando && distancia >= distanciaDoSpawn) proximoSpawn();
+    const tempoAteCoca = primeiraCocaDaOnda ? (primeiraCocaDaOnda.pos.x - GALEGO_X - P_W) / velocidade : Infinity;
+    const horaDePular = tempoAteCoca > 0.04 && tempoAteCoca < 0.24;
+    hudShow.text = noShow ? `${horaDePular ? "PULE!" : "CARRO DO SOM"}  ${Math.ceil(showAte - tempo)}s`
+      : carroChegando ? "PULE NO CARRO DO SOM" : "";
+    if (!noShow) Musica.encerrarRefrao();
     hudPontos.text = String(pontos());
     hudCocas.text  = `x ${cocas}`;
     const t = (velocidade - VEL_INICIAL) / (VEL_MAX - VEL_INICIAL);
     barra.width = 10 + 114 * t;
-    Musica.ritmo(132 + Math.round(t * 36));   // a música acelera junto com a moto
+    Musica.ritmo((noShow ? 154 : 132) + Math.round(t * 36));
     barra.color = t > 0.7 ? COR.vermelho : COR.laranja;
   });
 
@@ -842,6 +922,7 @@ scene("jogo", () => {
   function fimDeJogo(motivo) {
     if (!vivo) return;
     vivo = false;
+    Musica.encerrarRefrao();
     Musica.tropeco();
     velocidade = 0;
     shake(14);
@@ -865,7 +946,7 @@ scene("fim", ({ motivo, pontos, cocas, recorde, novoRecorde }) => {
   const MENSAGENS = {
     remedio: ["O Galego tomou o REMÉDIO...", "Ele fez algo sensato. Inaceitável!"],
     halter:  ["O Galego encostou num HALTER...", "Exercício?! Desmaiou de desgosto!"],
-    carro:   ["Ficou pra trás do carro de som!", "É pra subir EM CIMA, não na frente!"],
+    herculano: ["HERCULANO barrou o Galego!", "Segure o pulo para passar por cima dele."],
   };
   const [titulo, sub] = MENSAGENS[motivo] || ["Fim de jogo!", ""];
 
