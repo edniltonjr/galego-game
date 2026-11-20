@@ -153,6 +153,9 @@ const GALEGO_X     = 140;   // posição fixa do Galego na tela
 const FOLGA_MAXIMA = 108;
 const FOLGA_CAPTURA = 32;
 const FOLGA_POR_COCA = 19;
+const INTERVALO_ARRANCADA = 14;
+const AVISO_ARRANCADA = 1;
+const DURACAO_ARRANCADA = 0.24;
 const P_W = 70, P_H = 95;   // tamanho do Galego + moto
 // Desenho do Galego na moto: 120 x 169, rodas alinhadas ao chão, sobrando para os lados
 const PILOTO = { w: 120, h: 169, x: -25, y: P_H - 169 };
@@ -634,7 +637,7 @@ scene("inicio", () => {
     pos(width() / 2, 475), anchor("center"), color(255, 255, 255), z(60),
   ]);
   add([
-    escrever("Pegue Cocas para abrir distância de Herculano.", 19),
+    escrever("Pegue Cocas para ganhar distância. Pule quando Herculano arrancar.", 19),
     pos(width() / 2, 503), anchor("center"), color(255, 255, 255), z(60),
   ]);
 
@@ -684,6 +687,7 @@ scene("jogo", () => {
   let cocasNoAr = 0;
   let peAnterior = CHAO_Y;
   let folga = FOLGA_MAXIMA;
+  let faltaParaArrancada = 8;
   const pontos = () => Math.floor(distancia / 50) + bonus;
 
   montarCenario(() => velocidade);
@@ -917,18 +921,29 @@ scene("jogo", () => {
     velocidade = Math.min(VEL_MAX, velocidade + 6 * dt()); // fica mais difícil com o tempo
     distancia += velocidade * dt();
     const noShow = tempo < showAte;
-    // Herculano aperta o passo quando a corrida acelera. O teto dá uma trégua.
-    if (!noShow) folga -= (7 + 4 * (velocidade - VEL_INICIAL) / (VEL_MAX - VEL_INICIAL)) * dt();
-    herculano.pos.x = GALEGO_X - folga;
+    if (!noShow) {
+      faltaParaArrancada -= dt();
+      folga = Math.max(FOLGA_CAPTURA, folga - (7 + 4 * (velocidade - VEL_INICIAL) / (VEL_MAX - VEL_INICIAL)) * dt());
+    }
+    const avisando = !noShow && faltaParaArrancada <= AVISO_ARRANCADA;
+    const arrancando = avisando && faltaParaArrancada <= DURACAO_ARRANCADA;
+    const progresso = arrancando ? Math.min(1, 1 - faltaParaArrancada / DURACAO_ARRANCADA) : 0;
+    const folgaVisual = folga + (FOLGA_CAPTURA - folga) * progresso;
+    herculano.pos.x = GALEGO_X - folgaVisual;
     figuraHerculano.pos.y = -Math.abs(Math.sin(tempo * 16)) * 5;
     figuraHerculano.angle = Math.sin(tempo * 16) * 4;
-    nomeHerculano.text = folga < 57 ? "PEGUE COCAS!" : "HERCULANO";
-    nomeHerculano.color = folga < 57 ? COR.vermelho : COR.amarelo;
-    if (folga <= FOLGA_CAPTURA && galego.pos.y + P_H >= CHAO_Y - 54) {
+    nomeHerculano.text = arrancando ? "PULE!" : avisando ? "VAI ARRANCAR!" : folga < 57 ? "PEGUE COCAS!" : "HERCULANO";
+    nomeHerculano.color = avisando || folga < 57 ? COR.vermelho : COR.amarelo;
+    const tentouPegar = arrancando && faltaParaArrancada <= 0;
+    const alcancouNaCorrida = !noShow && !avisando && folga <= FOLGA_CAPTURA;
+    if ((tentouPegar || alcancouNaCorrida) && galego.pos.y + P_H >= CHAO_Y - 54) {
       fimDeJogo("herculano");
       return;
     }
-    folga = Math.max(FOLGA_CAPTURA, folga);
+    if (tentouPegar) {
+      faltaParaArrancada = INTERVALO_ARRANCADA;
+      folga = Math.max(80, folga);
+    }
     const carroChegando = carroNaPista && !carroNaPista.subiu && carroNaPista.pos.x + 216 > GALEGO_X;
     if (!noShow && !carroChegando && distancia >= distanciaDoSpawn) proximoSpawn();
     const tempoAteCoca = primeiraCocaDaOnda ? (primeiraCocaDaOnda.pos.x - GALEGO_X - P_W) / velocidade : Infinity;
@@ -972,7 +987,7 @@ scene("fim", ({ motivo, pontos, cocas, recorde, novoRecorde }) => {
   const MENSAGENS = {
     remedio: ["O Galego tomou o REMÉDIO...", "Ele fez algo sensato. Inaceitável!"],
     halter:  ["O Galego encostou num HALTER...", "Exercício?! Desmaiou de desgosto!"],
-    herculano: ["HERCULANO pegou o Galego!", "Pegue Cocas para abrir distância."],
+    herculano: ["HERCULANO pegou o Galego!", "Pule no aviso PULE! para escapar da arrancada."],
   };
   const [titulo, sub] = MENSAGENS[motivo] || ["Fim de jogo!", ""];
 
